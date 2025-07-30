@@ -41,8 +41,6 @@
 
 > Python版本：3.11.10(官方要求>=3.11)
 
-> 核心BrowserUse：browser-use
-
 > GUI UI使用：tkinter
 
 > 打包程序使用：cx_Freeze
