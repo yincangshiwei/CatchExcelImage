@@ -52,7 +52,7 @@
 ```
 BrowserUse/
 ├── gui.py
-├── main.py
+├── core.py
 ├── setup.py
 ├── requirements.txt
 ├── README.md
@@ -62,7 +62,7 @@ BrowserUse/
 
 架构介绍：
 - `gui.py`: gui界面代码。
-- `main.py`: 主要逻辑代码。
+- `core.py`: 主要逻辑代码。
 - `setup.py`: 用于打包应用程序的脚本。
 - `requirements.txt`: 列出了所有依赖项。
 - `README.md`: 项目的说明文档（中文）。
@@ -98,7 +98,7 @@ pip install -r requirements.txt
 
 ### 4. 运行文件
 ```sh
-python -u main.py
+python -u gui.py
 ```
 
 ### 5. 打包exe

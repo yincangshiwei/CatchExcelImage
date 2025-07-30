@@ -14,7 +14,7 @@ import socket
 import sys
 from datetime import datetime
 from ttkthemes import ThemedTk
-from main import (
+from core import (
     extract_workbook_images,
     extract_sheet_images, 
     extract_column_images,

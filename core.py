@@ -104,6 +104,119 @@ def _extract_floating_images(xlsx_path: str) -> Dict[str, str]:
     return floating_images
 
 
+def _get_all_floating_image_positions(xlsx_path: str) -> Dict[str, Dict[str, Dict[str, int]]]:
+    """
+    获取所有工作表中浮动图片的位置信息
+    返回 {工作表名 -> {图片文件名 -> {'from_col': int, 'to_col': int, 'from_row': int, 'to_row': int}}} 的映射
+    """
+    all_positions = {}
+    
+    wb = openpyxl.load_workbook(xlsx_path, data_only=False)
+    
+    for sheet_index, ws in enumerate(wb.worksheets, 1):
+        sheet_name = ws.title
+        all_positions[sheet_name] = _get_floating_image_positions(xlsx_path, sheet_name)
+    
+    return all_positions
+
+
+def _get_floating_image_positions(xlsx_path: str, sheet_name: str) -> Dict[str, Dict[str, int]]:
+    """
+    获取指定工作表中浮动图片的位置信息
+    返回 {图片文件名 -> {'from_col': int, 'to_col': int, 'from_row': int, 'to_row': int}} 的映射
+    """
+    image_positions = {}
+    
+    with zipfile.ZipFile(xlsx_path, 'r') as z:
+        file_list = z.namelist()
+        
+        # 首先找到工作表对应的drawing文件
+        # 需要解析xl/worksheets/_rels/sheet{N}.xml.rels来找到对应的drawing文件
+        wb = openpyxl.load_workbook(xlsx_path, data_only=False)
+        sheet_index = None
+        for i, ws in enumerate(wb.worksheets, 1):
+            if ws.title == sheet_name:
+                sheet_index = i
+                break
+        
+        if sheet_index is None:
+            return image_positions
+        
+        # 查找对应的drawing文件
+        drawing_rels_path = f'xl/worksheets/_rels/sheet{sheet_index}.xml.rels'
+        drawing_path = None
+        
+        if drawing_rels_path in file_list:
+            try:
+                rels_xml = z.read(drawing_rels_path)
+                rels_root = ET.fromstring(rels_xml)
+                
+                # 查找drawing关系
+                for rel in rels_root.findall('.//{http://schemas.openxmlformats.org/package/2006/relationships}Relationship'):
+                    if 'drawing' in rel.get('Target', ''):
+                        drawing_path = 'xl/' + rel.get('Target')
+                        break
+            except:
+                pass
+        
+        if drawing_path and drawing_path in file_list:
+            try:
+                drawing_xml = z.read(drawing_path)
+                drawing_root = ET.fromstring(drawing_xml)
+                
+                # 定义命名空间
+                namespaces = {
+                    'xdr': 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing',
+                    'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
+                    'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+                }
+                
+                # 解析图片位置信息
+                for pic in drawing_root.findall('.//xdr:pic', namespaces):
+                    try:
+                        # 获取图片的关系ID
+                        blip = pic.find('.//a:blip', namespaces)
+                        if blip is not None:
+                            r_embed = blip.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
+                            
+                            # 获取位置信息
+                            anchor = pic.getparent()
+                            from_elem = anchor.find('.//xdr:from', namespaces)
+                            to_elem = anchor.find('.//xdr:to', namespaces)
+                            
+                            if from_elem is not None and to_elem is not None:
+                                from_col_elem = from_elem.find('xdr:col', namespaces)
+                                to_col_elem = to_elem.find('xdr:col', namespaces)
+                                from_row_elem = from_elem.find('xdr:row', namespaces)
+                                to_row_elem = to_elem.find('xdr:row', namespaces)
+                                
+                                if all(elem is not None for elem in [from_col_elem, to_col_elem, from_row_elem, to_row_elem]):
+                                    # 通过关系ID找到对应的图片文件名
+                                    drawing_rels_path = drawing_path.replace('.xml', '.xml.rels')
+                                    if drawing_rels_path in file_list:
+                                        drawing_rels_xml = z.read(drawing_rels_path)
+                                        drawing_rels_root = ET.fromstring(drawing_rels_xml)
+                                        
+                                        for rel in drawing_rels_root.findall('.//{http://schemas.openxmlformats.org/package/2006/relationships}Relationship'):
+                                            if rel.get('Id') == r_embed:
+                                                target = rel.get('Target')
+                                                if target:
+                                                    filename = target.split('/')[-1]
+                                                    image_positions[filename] = {
+                                                        'from_col': int(from_col_elem.text),
+                                                        'to_col': int(to_col_elem.text),
+                                                        'from_row': int(from_row_elem.text),
+                                                        'to_row': int(to_row_elem.text)
+                                                    }
+                                                break
+                    except:
+                        continue
+            except:
+                pass
+    
+    return image_positions
+
+
 def _get_row_data_for_image(ws: openpyxl.worksheet.worksheet.Worksheet, 
                            img_id: str, 
                            target_columns: List[str]) -> Dict[str, any]:
@@ -232,7 +345,7 @@ def extract_workbook_images(xlsx_path: str,
                     out_file = os.path.join(output_dir, f"FLOAT_{filename}")
                 
                 with open(out_file, 'wb') as f:
-                    f.write(img_data)
+                     f.write(img_data)
                 saved.append(os.path.abspath(out_file))
                 sequence_counter += 1
     
@@ -287,26 +400,32 @@ def extract_sheet_images(xlsx_path: str,
                 saved.append(os.path.abspath(out_file))
                 sequence_counter += 1
         
-        # 提取浮动式图片（注意：浮动式图片无法精确定位到特定工作表，这里提取所有浮动式图片）
+        # 提取浮动式图片（只提取指定工作表中的浮动图片）
         if include_floating:
+            # 获取浮动图片的位置信息
+            floating_positions = _get_floating_image_positions(xlsx_path, sheet_name)
+            
             for filename, internal_path in floating_images.items():
-                img_internal = 'xl/' + internal_path
-                img_data = z.read(img_internal)
-                # 保持原始文件扩展名
-                file_ext = os.path.splitext(filename)[1] or '.png'
-                
-                # 生成文件名
-                if custom_naming_func:
-                    base_name = os.path.splitext(filename)[0]
-                    custom_filename = custom_naming_func(base_name, None, sequence_counter)
-                    out_file = os.path.join(output_dir, f"{custom_filename}{file_ext}")
-                else:
-                    out_file = os.path.join(output_dir, f"FLOAT_{filename}")
-                
-                with open(out_file, 'wb') as f:
-                    f.write(img_data)
-                saved.append(os.path.abspath(out_file))
-                sequence_counter += 1
+                 # 检查图片是否在指定工作表中
+                 if filename in floating_positions:
+                     print(f"浮动图片 {filename} 位于工作表 '{sheet_name}' 中，将被包含")
+                     img_internal = 'xl/' + internal_path
+                     img_data = z.read(img_internal)
+                     # 保持原始文件扩展名
+                     file_ext = os.path.splitext(filename)[1] or '.png'
+                     
+                     # 生成文件名
+                     if custom_naming_func:
+                         base_name = os.path.splitext(filename)[0]
+                         custom_filename = custom_naming_func(base_name, None, sequence_counter)
+                         out_file = os.path.join(output_dir, f"{custom_filename}{file_ext}")
+                     else:
+                         out_file = os.path.join(output_dir, f"FLOAT_{filename}")
+                     
+                     with open(out_file, 'wb') as f:
+                         f.write(img_data)
+                     saved.append(os.path.abspath(out_file))
+                     sequence_counter += 1
     
     return saved
 
@@ -381,26 +500,52 @@ def extract_column_images(xlsx_path: str,
                 saved.append(os.path.abspath(out_file))
                 sequence_counter += 1
         
-        # 提取浮动式图片（注意：浮动式图片无法精确定位到特定列，这里提取所有浮动式图片）
+        # 提取浮动式图片（根据指定列进行过滤）
         if include_floating:
+            # 获取浮动图片的位置信息
+            floating_positions = _get_floating_image_positions(xlsx_path, sheet_name)
+            
+            # 将列名转换为列索引（0-based）
+            target_col_indices = set()
+            for col in column_list:
+                col_idx = openpyxl.utils.column_index_from_string(col) - 1  # 转换为0-based索引
+                target_col_indices.add(col_idx)
+            
             for filename, internal_path in floating_images.items():
-                img_internal = 'xl/' + internal_path
-                img_data = z.read(img_internal)
-                # 保持原始文件扩展名
-                file_ext = os.path.splitext(filename)[1] or '.png'
-                
-                # 生成文件名
-                if custom_naming_func:
-                    base_name = os.path.splitext(filename)[0]
-                    custom_filename = custom_naming_func(base_name, None, sequence_counter)
-                    out_file = os.path.join(output_dir, f"{custom_filename}{file_ext}")
-                else:
-                    out_file = os.path.join(output_dir, f"FLOAT_{filename}")
-                
-                with open(out_file, 'wb') as f:
-                    f.write(img_data)
-                saved.append(os.path.abspath(out_file))
-                sequence_counter += 1
+                 # 检查图片是否在指定列范围内
+                 should_include = False
+                 if filename in floating_positions:
+                     pos = floating_positions[filename]
+                     # 检查图片的列范围是否与指定列有交集
+                     img_col_range = set(range(pos['from_col'], pos['to_col'] + 1))
+                     if img_col_range.intersection(target_col_indices):
+                         should_include = True
+                         print(f"浮动图片 {filename} 位于列 {pos['from_col']}-{pos['to_col']}，与指定列 {columns} 有交集，将被包含")
+                     else:
+                         print(f"浮动图片 {filename} 位于列 {pos['from_col']}-{pos['to_col']}，与指定列 {columns} 无交集，已过滤")
+                 else:
+                     # 如果无法获取位置信息，为了保持兼容性，仍然包含该图片
+                     print(f"警告：无法获取浮动图片 {filename} 的位置信息，为保持兼容性仍然包含")
+                     should_include = True
+                 
+                 if should_include:
+                     img_internal = 'xl/' + internal_path
+                     img_data = z.read(img_internal)
+                     # 保持原始文件扩展名
+                     file_ext = os.path.splitext(filename)[1] or '.png'
+                     
+                     # 生成文件名
+                     if custom_naming_func:
+                         base_name = os.path.splitext(filename)[0]
+                         custom_filename = custom_naming_func(base_name, None, sequence_counter)
+                         out_file = os.path.join(output_dir, f"{custom_filename}{file_ext}")
+                     else:
+                         out_file = os.path.join(output_dir, f"FLOAT_{filename}")
+                     
+                     with open(out_file, 'wb') as f:
+                         f.write(img_data)
+                     saved.append(os.path.abspath(out_file))
+                     sequence_counter += 1
     
     return saved
 
